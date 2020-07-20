@@ -21,6 +21,7 @@ import datetime
 from typing import Optional, Text, Type
 
 import absl
+import random
 
 from ml_metadata.proto import metadata_store_pb2
 from tfx.dsl.component.experimental import container_component
@@ -126,7 +127,7 @@ def _wrap_container_component(
   # outputs/parameters fields are not used as they
   # are contained in the serialized component
   return container_component.create_container_component(
-      name=component.id,
+      name=component.id + str(random.randint(1,9999)),
       outputs={},
       parameters={},
       image=_TFX_IMAGE,
