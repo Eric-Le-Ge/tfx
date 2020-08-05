@@ -39,7 +39,8 @@ from tfx.components import StatisticsGen
 from tfx.components import Trainer
 from tfx.components import Transform
 from tfx.components.base import executor_spec
-from tfx.components.trainer.executor import GenericExecutor
+#from tfx.components.trainer.executor import GenericExecutor
+from tfx.extensions.google_cloud_kubernetes.trainer import executor as kubernetes_trainer_executor
 from tfx.dsl.experimental import latest_blessed_model_resolver
 from tfx.orchestration import metadata
 from tfx.orchestration import pipeline
@@ -57,7 +58,8 @@ _pipeline_name = 'cifar10_native_keras'
 # This example assumes that CIFAR10 train set data is stored in
 # ~/cifar10/data/train, test set data is stored in ~/cifar10/data/test, and
 # the utility function is in ~/cifar10. Feel free to customize as needed.
-_cifar10_root = os.path.join(os.environ['HOME'], 'cifar10')
+#_cifar10_root = os.path.join(os.environ['HOME'], 'dean', 'tfx', 'tfx', 'examples', 'cifar10')
+_cifar10_root = 'gs://tfx-eric-cifar10/cifar10'
 _data_root = os.path.join(_cifar10_root, 'data')
 # Python module files to inject customized logic into the TFX components. The
 # Transform and Trainer both require user-defined functions to run successfully.
@@ -71,7 +73,7 @@ _serving_model_dir_lite = os.path.join(_cifar10_root, 'serving_model_lite',
 # example code, and metadata library is relative to $HOME, but you can store
 # these files anywhere on your local filesystem.
 _tfx_root = os.path.join(os.environ['HOME'], 'tfx')
-_pipeline_root = os.path.join(_tfx_root, 'pipelines', _pipeline_name)
+_pipeline_root = os.path.join('gs://tfx-eric-cifar10', 'pipelines', _pipeline_name) #os.path.join(_tfx_root, 'pipelines', _pipeline_name)
 # Sqlite ML-metadata db path.
 _metadata_path = os.path.join(_tfx_root, 'metadata', _pipeline_name,
                               'metadata.db')
@@ -93,8 +95,8 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
   # Change the pattern argument to train_whole/* and test_whole/* to train
   # on the whole CIFAR-10 dataset
   input_config = example_gen_pb2.Input(splits=[
-      example_gen_pb2.Input.Split(name='train', pattern='train/*'),
-      example_gen_pb2.Input.Split(name='eval', pattern='test/*')])
+      example_gen_pb2.Input.Split(name='train', pattern='train_whole/*'),
+      example_gen_pb2.Input.Split(name='eval', pattern='test_whole/*')])
 
   examples = external_input(data_root)
 
@@ -128,12 +130,16 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
   # and 4 eval steps corresopnd to 1 epoch on this tiny test set.
   trainer = Trainer(
       module_file=module_file,
-      custom_executor_spec=executor_spec.ExecutorClassSpec(GenericExecutor),
+      custom_executor_spec=executor_spec.ExecutorClassSpec(kubernetes_trainer_executor.GenericExecutor),
       examples=transform.outputs['transformed_examples'],
       transform_graph=transform.outputs['transform_graph'],
       schema=schema_gen.outputs['schema'],
-      train_args=trainer_pb2.TrainArgs(num_steps=160),
-      eval_args=trainer_pb2.EvalArgs(num_steps=4))
+      train_args=trainer_pb2.TrainArgs(num_steps=18744),
+      eval_args=trainer_pb2.EvalArgs(num_steps=156),
+      custom_config={
+        kubernetes_trainer_executor.TRAINING_ARGS_KEY: {'num_workers': 8,
+        'num_gpus_per_worker': 1}}
+      )
 
   # Get the latest blessed model for model validation.
   model_resolver = ResolverNode(
@@ -186,12 +192,12 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
       example_gen,
       statistics_gen,
       schema_gen,
-      example_validator,
+      # example_validator,
       transform,
       trainer,
-      model_resolver,
-      evaluator,
-      pusher
+      #model_resolver,
+      #evaluator,
+      #pusher
   ]
 
   return pipeline.Pipeline(

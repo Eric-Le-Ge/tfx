@@ -25,44 +25,45 @@ from __future__ import print_function
 import os
 from typing import List, Text
 import absl
+import json
 import tensorflow as tf
 import tensorflow_transform as tft
 
-import flatbuffers
+#import flatbuffers
 # pylint: disable=g-direct-tensorflow-import
-from tflite_support import metadata as _metadata
-from tflite_support import metadata_schema_py_generated as _metadata_fb
+#from tflite_support import metadata as _metadata
+#from tflite_support import metadata_schema_py_generated as _metadata_fb
 # pylint: enable=g-direct-tensorflow-import
 
-from tfx.components.trainer.rewriting import converters
-from tfx.components.trainer.rewriting import rewriter
-from tfx.components.trainer.rewriting import rewriter_factory
+# from tfx.components.trainer.rewriting import converters
+# from tfx.components.trainer.rewriting import rewriter
+# from tfx.components.trainer.rewriting import rewriter_factory
 
 from tfx.components.trainer.executor import TrainerFnArgs
 
 # When training on the whole dataset use following constants instead.
 # This setting should give ~91% accuracy on the whole test set
-# _TRAIN_DATA_SIZE = 50000
-# _EVAL_DATA_SIZE = 10000
-# _TRAIN_BATCH_SIZE = 64
-# _EVAL_BATCH_SIZE = 64
-# _CLASSIFIER_LEARNING_RATE = 3e-4
-# _FINETUNE_LEARNING_RATE = 5e-5
-# _CLASSIFIER_EPOCHS = 12
+_TRAIN_DATA_SIZE = 50000
+_EVAL_DATA_SIZE = 10000
+_TRAIN_BATCH_SIZE = 64
+_EVAL_BATCH_SIZE = 64
+_CLASSIFIER_LEARNING_RATE = 3e-4
+_FINETUNE_LEARNING_RATE = 5e-5
+_CLASSIFIER_EPOCHS = 12
 
-_TRAIN_DATA_SIZE = 128
-_EVAL_DATA_SIZE = 128
-_TRAIN_BATCH_SIZE = 32
-_EVAL_BATCH_SIZE = 32
-_CLASSIFIER_LEARNING_RATE = 1e-3
-_FINETUNE_LEARNING_RATE = 7e-6
-_CLASSIFIER_EPOCHS = 30
+# _TRAIN_DATA_SIZE = 128
+# _EVAL_DATA_SIZE = 128
+# _TRAIN_BATCH_SIZE = 32
+# _EVAL_BATCH_SIZE = 32
+# _CLASSIFIER_LEARNING_RATE = 1e-3
+# _FINETUNE_LEARNING_RATE = 7e-6
+# _CLASSIFIER_EPOCHS = 30
 
 _IMAGE_KEY = 'image'
 _LABEL_KEY = 'label'
 
 _TFLITE_MODEL_NAME = 'tflite'
-_LABEL_MAP_FILE_PATH = 'cifar10/data/labels.txt'
+# _LABEL_MAP_FILE_PATH = 'cifar10/data/labels.txt'
 
 def _transformed_name(key):
   return key + '_xf'
@@ -305,14 +306,20 @@ def run_fn(fn_args: TrainerFnArgs):
   Args:
     fn_args: Holds args used to train the model as name/value pairs.
   """
+  gke_training_args = fn_args.gke_training_args
+  num_workers = gke_training_args.get('num_workers', 1)
+
+  multi_worker_strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy()
+
   tf_transform_output = tft.TFTransformOutput(fn_args.transform_output)
 
   train_dataset = _input_fn(fn_args.train_files, tf_transform_output,
-                            is_train=True, batch_size=_TRAIN_BATCH_SIZE)
+                            is_train=True, batch_size=num_workers*_TRAIN_BATCH_SIZE)
   eval_dataset = _input_fn(fn_args.eval_files, tf_transform_output,
-                           is_train=False, batch_size=_EVAL_BATCH_SIZE)
+                           is_train=False, batch_size=num_workers*_EVAL_BATCH_SIZE)
 
-  model, base_model = _build_keras_model()
+  with multi_worker_strategy.scope():
+    model, base_model = _build_keras_model()
 
   try:
     log_dir = fn_args.model_run_dir
@@ -328,7 +335,7 @@ def run_fn(fn_args: TrainerFnArgs):
   # Our training regime has two phases: we first freeze the backbone and train
   # the newly added classifier only, then unfreeze part of the backbone and
   # fine-tune with classifier jointly.
-  steps_per_epoch = int(_TRAIN_DATA_SIZE / _TRAIN_BATCH_SIZE)
+  steps_per_epoch = int(_TRAIN_DATA_SIZE / (_TRAIN_BATCH_SIZE*num_workers))
   total_epochs = int(fn_args.train_steps / steps_per_epoch)
   if _CLASSIFIER_EPOCHS > total_epochs:
     raise Exception('Classifier epochs is greater than the total epochs')
@@ -347,12 +354,14 @@ def run_fn(fn_args: TrainerFnArgs):
   # Unfreeze the top MobileNet layers and do joint fine-tuning
   _freeze_model_by_percentage(base_model, 0.9)
 
-  # We need to recompile the model because layer properties have changed
-  model.compile(
-      loss='sparse_categorical_crossentropy',
-      optimizer=tf.keras.optimizers.RMSprop(lr=_FINETUNE_LEARNING_RATE),
-      metrics=['sparse_categorical_accuracy'])
-  model.summary(print_fn=absl.logging.info)
+
+  with multi_worker_strategy.scope():
+    # We need to recompile the model because layer properties have changed
+    model.compile(
+        loss='sparse_categorical_crossentropy',
+        optimizer=tf.keras.optimizers.RMSprop(lr=_FINETUNE_LEARNING_RATE),
+        metrics=['sparse_categorical_accuracy'])
+    model.summary(print_fn=absl.logging.info)
 
   model.fit(
       train_dataset,
@@ -376,25 +385,37 @@ def run_fn(fn_args: TrainerFnArgs):
                       ))
   }
 
-  temp_saving_model_dir = os.path.join(fn_args.serving_model_dir, 'temp')
+
+  tf_config = json.loads(os.environ.get(constants.TF_CONFIG_ENV) or '{}')
+
+  task_type = tf_config['task']['type']
+  task_id = tf_config['task']['index']
+
+  def _is_chief(task_type, task_id):
+    """Returns true if this is run in the master (chief) of training cluster."""
+    # 'master' is a legacy notation of chief node in distributed training flock.
+    return task_type in ('chief', None) or (task_type in ('master', 'worker')
+                                            and task_id == 0)
+
+  temp_saving_model_dir = os.path.join(fn_args.serving_model_dir, 'temp_{}'.format(task_id))
   model.save(temp_saving_model_dir, save_format='tf', signatures=signatures)
 
-  tfrw = rewriter_factory.create_rewriter(
-      rewriter_factory.TFLITE_REWRITER, name='tflite_rewriter',
-      enable_experimental_new_converter=True)
-  converters.rewrite_saved_model(temp_saving_model_dir,
-                                 fn_args.serving_model_dir,
-                                 tfrw,
-                                 rewriter.ModelType.TFLITE_MODEL)
+  # tfrw = rewriter_factory.create_rewriter(
+  #     rewriter_factory.TFLITE_REWRITER, name='tflite_rewriter',
+  #     enable_experimental_new_converter=True)
+  # converters.rewrite_saved_model(temp_saving_model_dir,
+  #                                fn_args.serving_model_dir,
+  #                                tfrw,
+  #                                rewriter.ModelType.TFLITE_MODEL)
 
   # Add necessary TFLite metadata to the model in order to use it within MLKit
   # TODO(dzats@): Handle label map file path more properly, currently hard-coded
-  tflite_model_path = os.path.join(fn_args.serving_model_dir,
-                                   _TFLITE_MODEL_NAME)
+  # tflite_model_path = os.path.join(fn_args.serving_model_dir,
+  #                                  _TFLITE_MODEL_NAME)
   # TODO(dzats@): Extend the TFLite rewriter to be able to add TFLite metadata to the model
-  _write_metadata(model_path=tflite_model_path,
-                  label_map_path=_LABEL_MAP_FILE_PATH,
-                  mean=[127.5],
-                  std=[127.5])
-
-  tf.io.gfile.rmtree(temp_saving_model_dir)
+  # _write_metadata(model_path=tflite_model_path,
+  #                 label_map_path=_LABEL_MAP_FILE_PATH,
+  #                 mean=[127.5],
+  #                 std=[127.5])
+  if not _is_chief(task_type, task_id):
+    tf.io.gfile.rmtree(temp_saving_model_dir)

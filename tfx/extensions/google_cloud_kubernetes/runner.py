@@ -28,7 +28,7 @@ import kubernetes.client as client
 
 # For maintenance, see:
 # https://gist.github.com/Eric-Le-Ge/a7ef6c5ae66d4af9cc886536d6724175
-_TFX_IMAGE = "gcr.io/tfx-eric/gpu-tfx"
+_TFX_IMAGE = "gcr.io/tfx-eric/gpu-tfx-lite"
 
 _COMMAND = ["python", "-m", "tfx.scripts.run_executor"]
 
