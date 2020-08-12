@@ -36,20 +36,6 @@ from tfx.orchestration.launcher import container_common
 from tfx.utils import kube_utils
 
 
-def _pod_is_not_pending(resp: client.V1Pod):
-  return resp.status.phase != kube_utils.PodPhase.PENDING.value
-
-
-def _pod_is_done(resp: client.V1Pod):
-  return kube_utils.PodPhase(resp.status.phase).is_done
-
-
-def _sanitize_pod_name(pod_name: Text) -> Text:
-  pod_name = re.sub(r'[^a-z0-9-]', '-', pod_name.lower())
-  pod_name = re.sub(r'^[-]+', '', pod_name)
-  return re.sub(r'[-]+', '-', pod_name)
-
-
 class KubernetesComponentLauncher(base_component_launcher.BaseComponentLauncher
                                  ):
   """Responsible for launching a container executor on Kubernetes."""
@@ -143,7 +129,7 @@ class KubernetesComponentLauncher(base_component_launcher.BaseComponentLauncher
         core_api,
         pod_name,
         namespace,
-        exit_condition_lambda=_pod_is_not_pending,
+        exit_condition_lambda=kube_utils.pod_is_not_pending,
         condition_description='non-pending status')
 
     logging.info('Start log streaming for pod "%s:%s".', namespace, pod_name)
@@ -166,7 +152,7 @@ class KubernetesComponentLauncher(base_component_launcher.BaseComponentLauncher
         core_api,
         pod_name,
         namespace,
-        exit_condition_lambda=_pod_is_done,
+        exit_condition_lambda=kube_utils.pod_is_done,
         condition_description='done state')
 
     if resp.status.phase == kube_utils.PodPhase.FAILED.value:
@@ -297,4 +283,4 @@ class KubernetesComponentLauncher(base_component_launcher.BaseComponentLauncher
 
     pod_name = '%s-%s-%s' % (
         pipeline_name, self._component_info.component_id[:50], execution_id)
-    return _sanitize_pod_name(pod_name)
+    return kube_utils.sanitize_pod_name(pod_name)
