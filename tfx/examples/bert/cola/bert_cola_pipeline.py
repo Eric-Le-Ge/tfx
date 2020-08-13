@@ -34,7 +34,10 @@ from tfx.components import StatisticsGen
 from tfx.components import Trainer
 from tfx.components import Transform
 from tfx.components.base import executor_spec
-from tfx.components.trainer.executor import GenericExecutor
+
+import tfx.extensions.google_cloud_kubernetes.trainer.executor as kubernetes_trainer_executor
+
+
 from tfx.dsl.experimental import latest_blessed_model_resolver
 from tfx.orchestration import metadata
 from tfx.orchestration import pipeline
@@ -49,9 +52,10 @@ from tfx.utils.dsl_utils import external_input
 
 _pipeline_name = 'bert_cola'
 
+bucket = 'gs://tfx-eric-bert-cola'
 # This example assumes that COLA data is stored in ~/bert/cola/data and the
 # utility function is in ~/bert/cola. Feel free to customize as needed.
-_bert_cola_root = os.path.join(os.environ['HOME'], 'bert', 'cola')
+_bert_cola_root = bucket
 _data_root = os.path.join(_bert_cola_root, 'data')
 # Python module file to inject customized logic into the TFX components. The
 # Transform and Trainer both require user-defined functions to run successfully.
@@ -65,9 +69,9 @@ _serving_model_dir = os.path.join(_bert_cola_root, 'serving_model',
 # example code and metadata library is relative to $HOME, but you can store
 # these files anywhere on your local filesystem.
 _tfx_root = os.path.join(os.environ['HOME'], 'tfx')
-_pipeline_root = os.path.join(_tfx_root, 'pipelines', _pipeline_name)
+_pipeline_root = os.path.join(_bert_cola_root, 'pipelines', _pipeline_name)
 # Sqlite ML-metadata db path.
-_metadata_path = os.path.join(_tfx_root, 'metadata', _pipeline_name,
+_metadata_path = os.path.join(_tfx_root, 'db',
                               'metadata.db')
 
 # Pipeline arguments for Beam powered Components.
@@ -111,13 +115,18 @@ def _create_pipeline(pipeline_name: Text, pipeline_root: Text, data_root: Text,
   # Uses user-provided Python function that trains a model using TF-Learn.
   trainer = Trainer(
       module_file=module_file,
-      custom_executor_spec=executor_spec.ExecutorClassSpec(GenericExecutor),
+      custom_executor_spec=executor_spec.ExecutorClassSpec(kubernetes_trainer_executor.GenericExecutor),
       examples=transform.outputs['transformed_examples'],
       transform_graph=transform.outputs['transform_graph'],
       schema=schema_gen.outputs['schema'],
       # Adjust these steps when training on the full dataset.
       train_args=trainer_pb2.TrainArgs(num_steps=2),
-      eval_args=trainer_pb2.EvalArgs(num_steps=1))
+      eval_args=trainer_pb2.EvalArgs(num_steps=1),
+      custom_config={
+        kubernetes_trainer_executor.TRAINING_ARGS_KEY: {'num_workers': 2,
+        'num_gpus_per_worker': 1}
+        },
+      )
 
   # Get the latest blessed model for model validation.
   model_resolver = ResolverNode(
