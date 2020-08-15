@@ -55,7 +55,12 @@ python ~/cifar10/cifar_pipeline_native_keras.py
 ```
 The trained model is located at `~/cifar10/serving_model_lite/tflite`
 
-This model is ready to be used for object detection with MLKit. Follow MLKit's [documentation](https://developers.google.com/ml-kit/vision/object-detection/custom-models/android)  to set up an App and use it. 
+This model is ready to be used for object detection with MLKit. Follow MLKit's [documentation](https://developers.google.com/ml-kit/vision/object-detection/custom-models/android)  to set up an App and use it.
+
+### Train the model on GKE
+
+To speed up model training with a distributed node pool on Google Kubernetes Engine (GKE), you may follow the instructions in `distributed/README.md`.
+
 ## Acknowledge Data Source
 ```
 @TECHREPORT{Krizhevsky09learningmultiple,
